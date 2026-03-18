@@ -3,21 +3,13 @@ step0_model.py — SIR Epidemic Emulator
 
 Architecture overview
 
-1. StandardRFF          : [tau,gamma,rho] > 128-dim Fourier embedding                     
-2. Fusion MLP           : 128 → latent_dim (learns nonlinear combinations)
+1. StandardRFF          : [tau,gamma,rho] to 128-dim Fourier embedding                     
+2. Fusion MLP           : 128 to latent_dim (learns nonlinear combinations)
 3. S decoder            : monotone-decreasing B-spline via cumprod retention
-4. g(t) decoder         : free B-spline + sigmoid → g ∈ (0,1)
+4. g(t) decoder         : free B-spline + sigmoid then g ∈ (0,1)
 5. Conservation         : I = (N-S)·g,  R = (N-S)·(1-g)
-                          → S+I+R = N exactly, I≥0, R≥0 always
+                          then S+I+R = N exactly, I≥0, R≥0 always
 
-Key design choices
-
-• StandardRFF encodes all 3 params JOINTLY → captures τ/γ interactions for R₀
-• S uses cumprod of sigmoid retention rates → guaranteed monotone decreasing
-• g(0) pinned to ≈1 via first coefficient = 8.0 (sigmoid(8) = 0.9997)
-  so I(0) = (N-S₀)·g(0) ≈ Nρ and R(0) ≈ 0 as required by SIR physics
-• No softplus/clamp on R — conservation is exact by construction
-• Free (unconstrained) g(t) allows bell-curve I(t) for R₀ > 1
 """
 
 import torch
@@ -26,48 +18,50 @@ import torch.nn.functional as F
 import numpy as np
 from scipy.interpolate import BSpline
 
-
-# 1. STANDARD FOURIER FEATURES (the basic)
+#OPTION 1
+#  STANDARD FOURIER FEATURES (the basic)
 # Creating the frequency matrix (W) myself (not randomly sampling fron Gausian, more interpretable, )
 #So I have tried different ways to create W :
 #For example  W = base_frequency * torch.stack([k,k**2,k**3], dim=1) with normilization :  W = W / W.norm(dim=1, keepdim=True)
 #Another example :  W = base_frequency * torch.stack([k,k**2,k**4], dim=1), with normilization :  W = W / W.norm(dim=1, keepdim=True)
 #Still not producing good results when i train the model.
-#Please advise  
-# class StandardFourierFeatures(nn.Module):
-#     """
-#     Standard (deterministic) Fourier Features.
+#Please advise 
 
-#     Frequencies are fixed harmonics rather than random samples.
+class StandardFourierFeatures(nn.Module):
+    """
+    Standard (deterministic) Fourier Features.
 
-#     Maps:
-#         (batch, n_params) to (batch, 2 × n_fourier)
-#     """
+    Frequencies are fixed harmonics rather than random samples.
 
-#     def __init__(self, n_params=3, n_fourier=64, base_frequency=3): # base_frequency rescales W to control the frequency of oscillations in the embedding:
+    Maps:
+        (batch, n_params) to (batch, 2 × n_fourier)
+    """
 
-#         # Deterministic frequency indices
-#         k = torch.arange(1, n_fourier + 1).float() # k indices
+    def __init__(self, n_params=3, n_fourier=64, base_frequency=3): # base_frequency rescales W to control the frequency of oscillations in the embedding:
 
-#         # deterministic frequency matrix
-#         W = torch.zeros(n_fourier, 3)
+        # Deterministic frequency indices
+        k = torch.arange(1, n_fourier + 1).float() # k indices
+
+        # deterministic frequency matrix
+        W = torch.zeros(n_fourier, 3)
      
-#         W[:,0] = k        
-#         W[:,1] = 2*k     
-#         W[:,2] = 4*k   
-#         W = W / W.norm(dim=1, keepdim=True) # normilizatrion
-#         W = base_frequency * W # multipying the frequency matrix with the base frequence
+        W[:,0] = k        
+        W[:,1] = 2*k     
+        W[:,2] = 4*k   
+        W = W / W.norm(dim=1, keepdim=True) # normilizatrion
+        W = base_frequency * W # multipying the frequency matrix with the base frequence
         
-#         # Register as non-trainable buffer
-#         self.register_buffer("W", W)
+        # Register as non-trainable buffer
+        self.register_buffer("W", W)
 
-#         self.output_dim = 2 * n_fourier # 128 cosine and sine embeddings that i have included in phi
+        self.output_dim = 2 * n_fourier # 128 cosine and sine embeddings that i have included in phi
 
-#Second Option
+#OPTION 2
 #Standard Random Fourier features
 #Sampling from the frequency Matrix W from Gaussion distribution
 # Critically, because each row of W is an independent random vector in ℝ³, the projection z_k = τ·w₁ + γ·w₂ + ρ·w₃ assigns genuinely distinct weights to all three parameters at every frequency, enabling the embedding to represent the multiplicative interaction τ/γ that determines R₀ — something no additive deterministic frequency scheme can achieve without explicit cross-parameter interaction terms
 # Working well!
+
 class StandardRFF(nn.Module):
     def __init__(self, n_params=3, n_fourier=64, sigma=1.0):
         super().__init__()
@@ -160,7 +154,7 @@ class TemporalDecoder(nn.Module):
     g(t) function
     g(t) = I(t) / (N - S(t)) = fraction of ever-infected still infectious.
     Predicted as a FREE B-spline , then we sigmoid it such that g ∈ (0,1).
-    First spline coefficient is pinned to 8.0 so sigmoid(8) ≈ 1 → g(0) ≈ 1.
+    First spline coefficient is pinned to 20.0 so sigmoid(20) ≈ 1 → g(0) ≈ 1.
 
     I and R
 
@@ -212,7 +206,7 @@ class TemporalDecoder(nn.Module):
         """
         Args:
             z       : (batch, latent_dim)  — from fusion MLP
-            rho_raw : (batch,)             — raw ρ ∈ [0.001, 0.010]
+            rho_raw : (batch,)             — ρ ∈ [0.001, 0.010] # proportion of individuals initially infected
 
         Returns:
             S_pred, I_pred, R_pred  each (batch, n_timepoints)
@@ -239,10 +233,23 @@ class TemporalDecoder(nn.Module):
         S_pred      = self.spline_S(S_coeffs)                    # (batch, T)
 
         # g(t): fraction of ever-infected still infectious 
-        # g(0) pinned to ≈1 via first coefficient = 8.0
-        # sigmoid(8.0) = 0.9997 → I(0) ≈ N·ρ, R(0) ≈ 0
+       
         g_free      = self.predict_g_coeffs(z)                   # (batch, n_knots-1)
-        g_coeff_0   = torch.full((batch_size, 1), 8.0, device=device)
+        g_coeff_0   = torch.full((batch_size, 1), 20.0, device=device)
+
+        #Why did i choose the value 20.0
+        # g(t): fraction of ever-infected still infectious
+        #Recall I(t) = (N - S(t)) · g(t), R(t) = (N - S(t)) · (1 - g(t))
+        # At t=0, I(0) = N·ρ  (only the seed fraction is infected),R(0) = 0          (nobody has recovered yet)
+        # At t=0, R(0) = (N - S₀) · (1 - g(0)) = 0
+        #Since (N - S₀) = N·ρ > 0 always, the only way R(0)=0 is satisfied is if:
+        # g(0) = 1   exactly
+        # g is not the raw spline output, g(t) = sigmoid(h(t))
+        # so pinning to 1.0 would give me , g(0) = sigmoid(1.0) = 0.731 thus R(0) ≠ 0
+        # So i need  c such that sigmoid(c) ≈ 1
+        # so i choose c=8 then sigmoid(20.0) = 0.999999979 
+        #R(0) = (N·ρ) · (1 - 0.999999979)= 50 · 0.0003 = 0.00000105 people , basically zero
+      
         g_coeffs    = torch.cat([g_coeff_0, g_free], dim=1)      # (batch, n_knots)
         g_spline    = self.spline_g(g_coeffs)                    # (batch, T)
         g           = torch.sigmoid(g_spline)                    # (0,1) strict
@@ -255,9 +262,7 @@ class TemporalDecoder(nn.Module):
         R_pred = ever_infected * (1.0 - g)                      # (batch, T) ≥ 0
 
         # Conservation check (for debugging, not needed for correctness):
-        # S_pred + I_pred + R_pred
-        # = S + (N-S)·g + (N-S)·(1-g)
-        # = S + (N-S)·1 = N  ✓
+        # S_pred + I_pred + R_pred = S + (N-S)·g + (N-S)·(1-g)= S + (N-S)·1 = N  
 
         return S_pred, I_pred, R_pred
 
@@ -277,19 +282,6 @@ class HybridSIREmulator(nn.Module):
         z   (batch, latent_dim)
             ↓  TemporalDecoder  [+ rho_raw]
         S_pred, I_pred, R_pred  (batch, n_timepoints)
-
-    Args:
-        config : dict with keys:
-            n_params        (int)   = 3
-            n_fourier       (int)   = 64
-            sigma           (float) = 1.0
-            fusion_hidden   (int)   = 128
-            latent_dim      (int)   = 64
-            n_knots         (int)   = 12
-            n_timepoints    (int)   = 50
-            total_population(int)   = 10000
-            decoder_hidden  (int)   = 64
-            dropout         (float) = 0.1
     """
     def __init__(self, config: dict):
         super().__init__()
@@ -380,10 +372,8 @@ class HybridSIREmulator(nn.Module):
         }
 
 
-# 
-# 5. FACTORY FUNCTION
-# 
 
+# 5. FACTORY FUNCTION
 def create_hybrid_mlp_model(config: dict) -> HybridSIREmulator:
     """
     Build and return the SIR emulator from a config dict.
@@ -406,84 +396,3 @@ def create_hybrid_mlp_model(config: dict) -> HybridSIREmulator:
     return model
 
 
-# 6. SMOKE TEST
-
-
-if __name__ == '__main__':
-    import types
-
-    print("=" * 60)
-    print("SMOKE TEST — step0_model.py")
-    print("=" * 60)
-
-    config = {
-        'n_params'        : 3,
-        'n_fourier'       : 64,
-        #'sigma'           : 1.0,
-        'fusion_hidden'   : 128,
-        'latent_dim'      : 64,
-        'n_knots'         : 12,
-        'n_timepoints'    : 50,
-        'total_population': 10000,
-        'decoder_hidden'  : 64,
-        'dropout'         : 0.1,
-    }
-
-    model = create_hybrid_mlp_model(config)
-    model.eval()
-
-    # Fake batch of size 4
-    batch_size = 4
-    batch = types.SimpleNamespace(
-        params_norm = torch.rand(batch_size, 3),               # τ,γ,ρ in [0,1]
-        rho_raw     = torch.FloatTensor(batch_size).uniform_(0.001, 0.010),
-    )
-
-    with torch.no_grad():
-        out = model(batch)
-
-    print(f"\n  Input  params_norm : {batch.params_norm.shape}")
-    print(f"  Input  rho_raw     : {batch.rho_raw.shape}")
-    print(f"  Output predictions : {out.shape}  (batch, T, 3)")
-    print()
-
-    S = out[:, :, 0]
-    I = out[:, :, 1]
-    R = out[:, :, 2]
-
-    # Conservation check
-    total = S + I + R
-    print(f"  Conservation  S+I+R = N ?")
-    print(f"    mean = {total.mean().item():.4f}  (should be 10000)")
-    print(f"    max deviation from N: {(total - 10000).abs().max().item():.6f}")
-
-    # Non-negativity
-    print(f"\n  Non-negativity:")
-    print(f"    I min = {I.min().item():.4f}  (should be ≥ 0)")
-    print(f"    R min = {R.min().item():.4f}  (should be ≥ 0)")
-
-    # Initial conditions
-    print(f"\n  Initial conditions (t=0):")
-    for i in range(batch_size):
-        rho    = batch.rho_raw[i].item()
-        I0_exp = rho * 10000
-        I0_got = I[i, 0].item()
-        R0_got = R[i, 0].item()
-        print(f"    sample {i}: ρ={rho:.4f}  I(0) expected≈{I0_exp:.1f}  "
-              f"got={I0_got:.1f}  R(0)={R0_got:.4f}")
-
-    # S monotone check
-    S_diffs = S[:, 1:] - S[:, :-1]
-    n_violations = (S_diffs > 1e-4).sum().item()
-    print(f"\n  S monotone decreasing: {n_violations} violations (should be 0)")
-
-    # Parameter counts
-    comp = model.get_component_params()
-    print(f"\n  Parameter counts:")
-    print(f"    RFF trainable  : {comp['rff_trainable']:>8,}  (zero — fully frozen)")
-    print(f"    RFF frozen     : {comp['rff_frozen']:>8,}  (W matrix)")
-    print(f"    Fusion MLP     : {comp['fusion']:>8,}")
-    print(f"    Temporal decoder: {comp['temporal_decoder']:>8,}")
-    print(f"    TOTAL trainable: {comp['total']:>8,}")
-
-    print("\n  All checks passed")
