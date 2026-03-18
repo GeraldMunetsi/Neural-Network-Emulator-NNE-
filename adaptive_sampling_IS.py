@@ -1,419 +1,3 @@
-# import numpy as np # run arrays of parameters
-# from scipy.stats import qmc # quasi monte Carlos sampling inclufde sobol
-# from sklearn.neighbors import KernelDensity # implements KDE
-# from sklearn.preprocessing import StandardScaler # sanderdizes parameter space before Krs have different units or rangesDE. important because KDE assumes isotropic bandwith , scaling avoids distortion if paramete
-# import EoN
-# import networkx as nx
-
-# seed=4849
-# G = nx.barabasi_albert_graph(N=10000, m=5, seed=seed)
-# degrees = np.array([d for _, d in G.degree()])
-# k_avg  = degrees.mean()
-# k2_avg = (degrees ** 2).mean()
-# ratio  = k2_avg / k_avg  
-
-# n_samples= 500
-# theta_names = ['tau', 'gamma', 'rho']
-# theta= {
-#     'tau'  : (0.0024, 0.017),  # Expected range: R₀ ∈ [0.12, 4.98] #   recovery rate
-#     'gamma': (0.07,  0.5),  # Infectious period 2-10 days
-#     'rho'  : (0.001, 0.010),
-# }
-
-
-# def computeR0 (theta):
-#     tau=theta[0] # theta is a     2D numpty array with shape (N,3), all rows in  the first columnn
-#     gamma=theta[1]
-#     rho=theta[2]
-#     R0=tau/gamma*ratio ##element wise division in numpy is automartic
-#     return R0  
-
-
-
-
-# # #Sobol sampling
-# # def sobol_sample(n_sample,bounds):
-# #     dim=len(bounds)
-# #     sampler = qmc.Sobol(dim,scramble=True)
-# #     u=sampler.random(n_samples)
-# #     lower=np.array([b[0] for b in bounds])
-# #     upper=np.array([b[1] for b in bounds])
-    
-# #     samples=lower+(upper-lower)*u
-
-# #     return samples
-
-
-# #target density
-# def target_density(R0,sigma=0.1):
-#     return np.exp(-(R0-1)**2)  # sigma controls how tight the density concentrate around Ro=1, small sigma , more dense
-
-
-
-# def generate_sobol_samples(n_samples, seed=42, scramble=True):
-    
-#     print(f"\nGenerating {n_samples} Sobol samples  (d=3: tau, gamma, rho) ...")
-
-#     sampler = qmc.Sobol(d=3, scramble=scramble, seed=seed)
-
-#     # Sobol quality is best at exact powers of 2, Using powers of 2 preserves balance properties.
-    
-#     n_pow2 = 2 ** int(np.ceil(np.log2(max(n_samples, 2))))    
-
-#     if n_pow2 > n_samples:
-#         print(f"  Generating {n_pow2} (next power of 2), selecting {n_samples}")
-#         samples_unit = sampler.random(n=n_pow2)
-#         indices      = np.linspace(0, n_pow2 - 1, n_samples, dtype=int)
-#         samples_unit = samples_unit[indices]
-#     else:
-#         samples_unit = sampler.random(n=n_samples)
-
-#     # Scale unit-cube [0,1]^3 to physical parameter ranges
-#     samples = np.zeros_like(samples_unit)
-#     for i, name in enumerate(theta_names):
-#         lo, hi       = theta[name]
-#         samples[:, i] = samples_unit[:, i] * (hi - lo) + lo
-
-#     discrepancy = qmc.discrepancy(samples_unit)
-#     print(f"  Star discrepancy = {discrepancy:.6f}  (lower = better coverage)")
-
-#     return samples
-
-# #Estimate Proporsal with KDE
-# def estimate_Proporsal(theta):
-#     scaler= StandardScaler()
-#     X=scaler.fit_transform(samples)
-
-#     KDE=KernelDensity(kernel="gaussian",bandwidth=0.3)
-#     log_q= kde.score_sample(X)
-#     q=np.exp(log_q)
-
-#     return q,kde, scaler
-
-
-
-# #Importance Weights
-# def importance_weights(samples,q):
-#     Ro=generate_sobol_samples(samples)
-#     p=target_density(R0)
-
-#     w=p/q
-#     w=w/np.sum(w)
-
-#     return w
-
-# #sytematic resmpling
-# def systematic_resample(samples, weights):
-#     n= len(samples)
-#     u0 = np.random.uniform(0,1/n)
-#     positions = (u0 + np.arange(n)) / n
-#     cumsum = np.cumsum(weights)
-#     idx = np.searchsorted(cumsum, positions)
-#     return samples[idx]
-
-#Advantages
-#reduces resampling variance compared to other resamplimg methods such as multinomial
-#preserves diversity- less likely to collapse to a few points
-#vesry simple and efficient.
-
-
-#adaptive iteration
-
-
-# def adaptive_sampler(n_init=2000,
-#                      iterations=5):
-
-#     bounds = [
-#         (0.05,2),   # tau
-#         (0.05,2),   # gamma
-#         (0,1)       # rho
-#     ]
-
-#     # Step 1: Sobol initialization
-#     samples = generate_sobol_samples(n_init, bounds)
-
-#     for i in range(iterations):
-
-#         print(f"Iteration {i+1}")
-
-#         # Step 2: estimate proposal density
-#         q, kde, scaler =  estimate_Proporsal(samples)
-
-#         # Step 3: compute weights
-#         w = importance_weights(samples, q)
-
-#         # Step 4: systematic resampling
-#         samples = systematic_resample(samples, w)
-
-#     return samples
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# import numpy as np
-# import networkx as nx
-# from scipy.stats import qmc
-# from sklearn.neighbors import KernelDensity
-# from sklearn.preprocessing import StandardScaler
-# import EoN
-# import pickle
-# from scipy.stats import qmc
-# from pathlib import Path
-# import argparse
-# from tqdm import tqdm
-# # CONSTANTS
-
-
-# N = 10000   # network size (nodes)
-# m = 5       # Barabasi-Albert attachment parameter
-# initial_samples=40 #basically my proporsal distribution
-# n_replicates=5 
-# tmax=50 
-# n_timepoints=50
-# kernel_bandwith=0.05
-# sigma=0.3
-# PARAM_RANGES = {
-#     'tau'  : (0.0024, 0.017),   # transmission rate
-#     'gamma': (0.07,   0.50),    # recovery rate
-#     'rho'  : (0.001,  0.010),   # initial seed fraction
-# }
-# PARAM_NAMES = ['tau', 'gamma', 'rho']
-
-
-# network_stats_cache = {}
-# seed = 4849
-
-# def BA_network_stats(N,m):
-#     cache_key = (N, m, seed)
-#     if cache_key not in network_stats_cache:
-
-#         G       = nx.barabasi_albert_graph(N=N, m=m, seed=seed)
-#         degrees = np.array([d for _, d in G.degree()])
-#         K_AVG   = degrees.mean()
-#         K2_AVG  = (degrees ** 2).mean()
-#         RATIO   = K2_AVG / K_AVG  
-             
-#         network_stats_cache[cache_key] = {
-#             'K_avg' : K_AVG,
-#             'K2_avg': K2_AVG,
-#             'Ratio' : RATIO,
-#             'k_std' : degrees.std(),
-#             'k_max' : degrees.max(),
-#         }
-
-#         print(f"<k> = {K_AVG:.2f}")
-#         print(f"<k²>= {K2_AVG:.2f}")
-#         print(f"<k²>/<k>= {RATIO:.2f} ")
-#         print(f"sigma_k= {degrees.std():.2f}")
-#         print(f"k_max= {degrees.max()}")
-
-
-
-# # HELPER FUNCTIONS
-# def compute_R0(samples):
-
-#     tau   = samples[:, 0]    # all tau values   (N,)
-#     gamma = samples[:, 1]    # all gamma values (N,)
-#     R0    = (tau / gamma) *RATIO
-#     return R0
-
-
-# def target_density(R0, sigma=0.3, high_R0_weight=0.15):
-    
-#     p_threshold = np.exp(-((R0 - 1.0) / sigma) ** 2)
-
-#     return p_threshold
-
-
-# def generate_sobol_samples(n_samples, seed=42, scramble=True):
-   
-#     sampler = qmc.Sobol(d=3, scramble=scramble, seed=seed)
-
-#     n_pow2 = 2 ** int(np.ceil(np.log2(max(n_samples, 2))))
-#     if n_pow2 > n_samples:
-#         print(f"  Rounding up to {n_pow2} (next power of 2), keeping first {n_samples}")
-
-#     samples_unit = sampler.random(n=n_pow2)
-#     samples_unit = samples_unit[:n_samples]    
-
-#     # Scale from [0,1]^3 to physical ranges
-#     initial_sobol_samples = np.zeros_like(samples_unit)
-#     for i, name in enumerate(PARAM_NAMES):
-#         lo, hi          = PARAM_RANGES[name]
-#         initial_sobol_samples[:, i]   = samples_unit[:, i] * (hi - lo) + lo
-
-#     disc = qmc.discrepancy(samples_unit)
-#     print(f"  Star discrepancy = {disc:.6f}  (lower = better coverage)")
-
-#     return initial_sobol_samples
-
-
-# def estimate_proposal(samples):
-#     """
-#     Estimate the proposal density q(theta) at each sample using KDE.
-#     We standardise the parameter space first because tau, gamma, rho
-#     have very different scales. StandardScaler (zero mean, unit variance)
-#     prevents KDE from treating the small-range rho dimension as irrelevant.
-
-#     samples : np.array (N, 3) — physical parameter values
-#     Returns : q (N,), fitted kde, fitted scaler
-#     """
-#     scaler = StandardScaler()
-#     X      = scaler.fit_transform(samples)       
-
-#     kde    = KernelDensity(kernel='gaussian', bandwidth=0.3)   
-#     kde.fit(X)
-
-#     log_q  = kde.score_samples(X)               
-#     q      = np.exp(log_q)
-
-#     return q, kde, scaler
-
-
-# def compute_is_weights(samples, q):
-#     """
-#     Compute normalised IS weights: w_i = p(R0_i) / q(theta_i)
-
-#     p is the target density (focused near R0=1).
-#     q is the estimated proposal density from KDE.
-
-#     samples : np.array (N, 3)
-#     q       : np.array (N,) — proposal density at each sample
-#     Returns : w (N,) normalised weights summing to 1
-#     """
-#     R0 = compute_R0(samples)          
-#     p  = target_density(R0)          
-
-#     # Raw IS weights
-#     raw_w = p / (q + 1e-10)           # 1e-10 guards against division by zero
-
-#     # Normalise
-#     w = raw_w / raw_w.sum()
-
-#     return w, R0
-
-
-# def systematic_resample(samples, weights):
-#     """
-#     Systematic resampling — draw N new samples from the IS-weighted set.
-
-#     WHY SYSTEMATIC over other resampling methods like multinomial:
-#         - Reduces resampling variance
-#         - Preserves diversity (less likely to collapse to a few points)
-#         - O(N) cost vs O(N log N) for some other methods
-#         - Single random number u0 drives the whole procedure
-
-#     samples : np.array (N, 3)
-#     weights : np.array (N,) normalised weights summing to 1
-#     Returns : np.array (N, 3) resampled parameter sets
-#     """
-#     N       = len(samples)
-#     u0      = np.random.uniform(0, 1.0 / N)           # one random start draw
-#     positions = (u0 + np.arange(N)) / N               # N evenly-spaced positions
-#     cumsum  = np.cumsum(weights)
-#     idx     = np.searchsorted(cumsum, positions)       # where do positions land
-#     #idx     = np.clip(idx, 0, N - 1)                  # safety clamp
-#     return samples[idx]
-
-
-# def compute_ess(weights):
-#     """
-#     Effective Sample Size — how much information the  IS weights retain.
-#     like even though i have N sam[ples , how many independent samples are really conntributing
-#     If all weights are equal then all samples contribute equally, ESS ~1 ( perfect balance )
-#     if one weight dominates , only one sample effectively contributes , ESS~1
-#     For normalised weights: ESS = 1 / sum(w_i^2)
-#     Range: [1, N]
-
-#     ESS/N close to 1 then proposal matches target, no wasted samples.
-#     ESS/N close to 0 then proposal very different from target, most weight
-#                        on a few samples, high variance estimates.
-#     """
-#     w = np.array(weights, dtype=np.float64)
-#     w = w / w.sum()
-#     return float(1.0 / np.sum(w ** 2))
-
-
-
-# # MAIN ADAPTIVE SAMPLER
-
-
-# def adaptive_IS_sampler(initial_samples=initial_samples, n_final = 500,iterations= iterations,sigma= sigma,seed = seed, verbose = True,):
-#     """
-#     ALGORITHM:
-#         1. Sobol initialisation — broad uniform- coverage
-#         2. For each iteration:
-#             a. Estimate proposal q via KDE on current samples
-#             b. Compute R0 and target density p(R0)
-#             c. Compute IS weights  w = p / q
-#             d. Systematic resample, new samples concentrate near target
-
-#     """
-#     np.random.seed(seed)
-
-#     # ── Step 1: Sobol initialisation ──────────
-#     samples = generate_sobol_samples(initial_samples, seed=seed)
-#     R0      = compute_R0(samples)
-
-#     history = []
-
-
-#     # ── Steps 2–4: Adaptive iterations ───────────────────────────
-#     for i in range(iterations):
-
-#         # (a) Estimate proposal density via KDE
-#         q, kde, scaler = estimate_proposal(samples)
-
-#         # (b) Compute IS weights
-#         w, R0 = compute_is_weights(samples, q)
-
-#         # (c) ESS before resampling
-#         ess = compute_ess(w)
-
-#         # (d) Systematic resample
-#         samples = systematic_resample(samples, w)
-#         R0      = compute_R0(samples)
-
-#         record = {
-#             'iteration' : i + 1,
-#             'ess'       : ess,
-#             'ess_pct'   : 100 * ess / len(samples),
-#             'R0_mean'   : R0.mean(),
-#             'R0_std'    : R0.std(),
-#         }
-#         history.append(record)
-
-
-#     # Step 3: Trim or expand to n_final 
-#     if len(samples) > n_final:
-#         # Randomly subsample preserving IS weights approximately
-#         idx     = np.random.choice(len(samples), size=n_final, replace=False)
-#         samples = samples[idx]
-#     R0 = compute_R0(samples)
-
-#     return samples, R0, history
-
-
-
-
-
-
 
 """
 Adaptive Importance Sampling for Epidemic Threshold Learning
@@ -425,7 +9,7 @@ Generate parameter samples concentrated near the epidemic threshold R0 ≈ 1.
 Pipeline
 
 1. Sobol sampling for initial global exploration
-2. Estimate proposal density q(theta) using KDE
+2. Estimate proposal density q(theta) using Kernel Density Estimation 
 3. Compute target density p(R0) peaked near R0 = 1
 4. Compute importance weights w = p / q
 5. Systematic resampling
@@ -457,7 +41,6 @@ from pathlib import Path
 import csv
 
 # PARAMETERS
-
 N = 10000                  # network size
 m = 5                      # Barabasi–Albert attachment parameter
 seed = 4849
@@ -471,9 +54,9 @@ jitter_scale = 0.02        # perturbation scale after resampling
 iterations=3       #iterations fro resampling
 n_replicates=3  # replicates of parameter sets 
 PARAM_RANGES = {
-    'tau'  : (0.0024, 0.017),
+    'tau'  : (0.0024, 0.017), transmission rate
     'gamma': (0.07,   0.50),   # for 2-14 infectious period
-    'rho'  : (0.001,  0.010)   
+    'rho'  : (0.001,  0.010)   # proportion of individuals infected at time 0
 }
 
 PARAM_NAMES = ['tau', 'gamma', 'rho']
@@ -481,7 +64,6 @@ jitter_fraction=0.05    # pertubation fraction, using gausisan
 output_path = Path('epidemic_data_age_adaptive_sobol.pkl')
 
 # NETWORK STATISTICS
-
 def BA_network_stats(N, m, seed=4849):
     """
     Compute statistics of the Barabasi Albert network.
@@ -513,8 +95,6 @@ def BA_network_stats(N, m, seed=4849):
     return G, stats
 
 
-
-
 # R0 COMPUTATION
 def compute_R0(samples,ratio):
     """
@@ -531,7 +111,6 @@ def compute_R0(samples,ratio):
     return R0
 
 
-
 # TARGET DISTRIBUTION
 
 def target_density(R0, sigma=sigma):
@@ -542,8 +121,6 @@ def target_density(R0, sigma=sigma):
     """
 
     return np.exp(-0.5 * ((R0 - 1.0) / sigma) ** 2)
-
-
 
 # SOBOL INITIAL SAMPLING
 def generate_sobol_samples(n_samples=initial_samples, seed=seed):
@@ -614,13 +191,11 @@ def compute_is_weights(samples, q, ratio):
 
 
 # SYSTEMATIC RESAMPLING
- 
-
 def systematic_resample(samples, weights):
     """
     Systematic resampling — draw N new samples from the IS-weighted set.
 
-    WHY SYSTEMATIC over other resampling methods like multinomial:
+    WHY SYSTEMATIC over other resampling methods like multinomial:  (I need your advice here ************)
         - Reduces resampling variance
         - Preserves diversity (less likely to collapse to a few points)
         - O(N) cost vs O(N log N) for some other methods
@@ -664,11 +239,10 @@ def jitter_samples(samples, fraction=jitter_fraction):
 
 
 # EFFECTIVE SAMPLE SIZE
-
 def compute_ess(weights):
     """
-   Effective Sample Size — how much information the  IS weights retain.
-   like even though I have N samples , how many independent samples are really contributing
+   Effective Sample Size — how much information the IS weights retain.
+   Like even though I have N samples , how many independent samples are really contributing
     If all weights are equal then all samples contribute equally, ESS ~1 ( perfect balance )
     if one weight dominates , only one sample effectively contributes , ESS~1
     For normalised weights: ESS = 1 / sum(w_i^2)
@@ -729,8 +303,7 @@ def adaptive_IS_sampler(ratio,initial_samples=initial_samples,iterations=iterati
                   f"near thresh={near:.1f}%")
  
     # initial Sobol + resampled 
-    # deduplicate by rounding to 6 decimal places
-    # to avoid the same parameter set appearing in both train and test splits (data leakage).
+    # deduplicated by rounding to 6 decimal places to avoid the same parameter set appearing in both train and test splits (data leakage).
     combined = np.vstack([sobol_initial, samples])
     _, unique_idx = np.unique(
         np.round(combined, decimals=6), axis=0, return_index=True
@@ -738,7 +311,6 @@ def adaptive_IS_sampler(ratio,initial_samples=initial_samples,iterations=iterati
     final_samples = combined[np.sort(unique_idx)]
  
     return final_samples, ess_history   
-
 
 # RUN MULTIPLE SIR REPLICATES
 
